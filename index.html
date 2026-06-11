@@ -215,21 +215,27 @@
           </ul>
         </div>
         <div class="rules-card">
+          <h3>Classement de Poule</h3>
+          <ul>
+            <li><strong style="color:var(--gold)">10 pts</strong> par équipe qualifiée (1er ou 2e) que tu avais bien placée · <strong style="color:var(--accent)">+5 pts bonus</strong> si bonne place dans le groupe (1er ou 2e exact)</li>
+          </ul>
+        </div>
+        <div class="rules-card">
           <h3>Phase Finale – Qualification</h3>
           <ul>
-            <li><strong style="color:var(--gold)">10 pts</strong> par équipe qualifiée en 1/16 · <strong style="color:var(--accent)">+5 pts bonus</strong> si à la bonne place (1er ou 2ème)</li>
-            <li><strong style="color:var(--gold)">15 pts</strong> par équipe qualifiée en 1/4 · <strong style="color:var(--accent)">+8 pts bonus</strong> si bon score du match 1/8</li>
-            <li><strong style="color:var(--gold)">20 pts</strong> par équipe qualifiée en 1/2 · <strong style="color:var(--accent)">+8 pts bonus</strong> si bon score du match 1/4</li>
-            <li><strong style="color:var(--gold)">25 pts</strong> par équipe qualifiée en finale · <strong style="color:var(--accent)">+8 pts bonus</strong> si bon score du match 1/2</li>
+            <li><strong style="color:var(--gold)">15 pts</strong> par équipe qualifiée en 1/8 (bon gagnant du 1/16) · <strong style="color:var(--accent)">+8 pts bonus</strong> si bon score du match 1/16</li>
+            <li><strong style="color:var(--gold)">20 pts</strong> par équipe qualifiée en 1/4 (bon gagnant du 1/8) · <strong style="color:var(--accent)">+8 pts bonus</strong> si bon score du match 1/8</li>
+            <li><strong style="color:var(--gold)">25 pts</strong> par équipe qualifiée en finale (bon gagnant du 1/4) · <strong style="color:var(--accent)">+8 pts bonus</strong> si bon score du match 1/4</li>
+            <li><strong style="color:var(--gold)">30 pts</strong> par équipe qualifiée en finale (bon gagnant de la demi) · <strong style="color:var(--accent)">+8 pts bonus</strong> si bon score de la demi</li>
           </ul>
         </div>
         <div class="rules-card">
           <h3>Podium Final</h3>
           <ul>
-            <li><strong style="color:var(--gold)">30 pts</strong> – Champion du Monde</li>
-            <li><strong style="color:var(--gold)">20 pts</strong> – Finaliste (2ème)</li>
-            <li><strong style="color:var(--gold)">15 pts</strong> – 3ème place</li>
-            <li><strong style="color:var(--gold)">10 pts</strong> – 4ème place</li>
+            <li><strong style="color:var(--gold)">40 pts</strong> – Champion du Monde (bon gagnant de la finale)</li>
+            <li><strong style="color:var(--gold)">30 pts</strong> – Finaliste (2ème — bon perdant de la finale)</li>
+            <li><strong style="color:var(--gold)">25 pts</strong> – 3ème place (bon gagnant du match pour la 3e place)</li>
+            <li><strong style="color:var(--gold)">20 pts</strong> – 4ème place (bon perdant du match pour la 3e place)</li>
             <li><strong style="color:var(--accent)">+10 pts bonus</strong> – Score exact en finale ou match pour la 3ème place</li>
           </ul>
         </div>
@@ -524,33 +530,113 @@ let currentUserPhase = "groupes"; // which phase user is currently filling
 
 const ADMIN = { username:'MarieBidon', password:'011272' };
 const STORAGE_KEY = 'pronofootDB_v3';
-const FIREBASE_URL = 'https://pronocoupedumonde-default-rtdb.europe-west1.firebasedatabase.app/db.json';
+// FIREBASE_URL conservé pour compatibilité (non utilisé — voir FIREBASE_BASE)
+// const FIREBASE_URL = '...';
 
 // ============================================================
 // STORAGE — Firebase Realtime Database (partagé entre tous les appareils)
+// Chaque écriture est CIBLÉE sur un chemin précis (PATCH/PUT partiel)
+// pour éviter que deux usagers simultanés s'écrasent mutuellement.
 // ============================================================
+
+// URL de base sans .json (on l'ajoute par chemin)
+const FIREBASE_BASE = 'https://pronocoupedumonde-default-rtdb.europe-west1.firebasedatabase.app';
+
+// Écriture générique sur un sous-chemin Firebase
+async function fbSet(path, data){
+  const r = await fetch(`${FIREBASE_BASE}/${path}.json`, {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(data)
+  });
+  if(!r.ok) throw new Error(`Firebase PUT ${path} error ${r.status}`);
+}
+
+// Lecture d'un sous-chemin Firebase
+async function fbGet(path){
+  const r = await Promise.race([
+    fetch(`${FIREBASE_BASE}/${path}.json`),
+    new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),5000))
+  ]);
+  if(!r.ok) throw new Error(`Firebase GET ${path} error ${r.status}`);
+  return r.json();
+}
+
+// Sauvegarde GLOBALE (admin uniquement — matches, pronosLocked)
 async function saveDB(){
   try {
-    const r = await fetch(FIREBASE_URL, {
-      method: 'PUT',
-      headers: { 'Content-Type':'application/json' },
-      body: JSON.stringify(DB)
-    });
-    if(!r.ok) throw new Error('Firebase save error '+r.status);
+    // Recharger d'abord pour ne pas écraser ce que d'autres ont écrit
+    const fresh = await fbGet('db');
+    if(fresh && typeof fresh === 'object' && !Array.isArray(fresh)){
+      if(fresh.users) Object.keys(fresh.users).forEach(k=>{ if(!DB.users[k]) DB.users[k]=fresh.users[k]; });
+      if(fresh.pronos) Object.keys(fresh.pronos).forEach(k=>{ if(!DB.pronos[k]) DB.pronos[k]=fresh.pronos[k]; });
+      if(fresh.pronoPhaseValidated) Object.keys(fresh.pronoPhaseValidated).forEach(k=>{ if(!DB.pronoPhaseValidated[k]) DB.pronoPhaseValidated[k]=fresh.pronoPhaseValidated[k]; });
+    }
+    await fbSet('db', DB);
   } catch(e){
-    console.warn('Firebase save failed', e);
+    console.warn('Firebase saveDB failed', e);
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); } catch(e2){}
   }
+}
+
+// Sauvegarde ciblée d'un UTILISATEUR (inscription, modification)
+async function saveUser(username){
+  const user = DB.users[username];
+  if(!user) return;
+  try {
+    await fbSet(`db/users/${username}`, user);
+  } catch(e){
+    console.warn('Firebase saveUser failed, fallback saveDB', e);
+    await saveDB();
+  }
+}
+
+// Sauvegarde ciblée d'UN PRONO
+async function saveProno(key){
+  const prono = DB.pronos[key];
+  if(!prono) return;
+  try {
+    await fbSet(`db/pronos/${key}`, prono);
+  } catch(e){
+    console.warn('Firebase saveProno failed, fallback saveDB', e);
+    await saveDB();
+  }
+}
+
+// Suppression ciblée d'un prono
+async function deletePronoRemote(key){
+  try {
+    await fetch(`${FIREBASE_BASE}/db/pronos/${key}.json`, {method:'DELETE'});
+  } catch(e){ console.warn('Firebase deleteProno failed', e); }
+}
+
+// Suppression ciblée d'un utilisateur
+async function deleteUserRemote(username){
+  try {
+    await fetch(`${FIREBASE_BASE}/db/users/${username}.json`, {method:'DELETE'});
+  } catch(e){ console.warn('Firebase deleteUser failed', e); }
+}
+
+// Sauvegarde ciblée de la validation de phase d'un user
+async function savePhaseValidated(username){
+  const pv = DB.pronoPhaseValidated[username];
+  if(!pv) return;
+  try {
+    await fbSet(`db/pronoPhaseValidated/${username}`, pv);
+  } catch(e){ console.warn('Firebase savePhaseValidated failed', e); await saveDB(); }
+}
+
+// Sauvegarde ciblée du verrou pronos (admin)
+async function saveLock(){
+  try {
+    await fbSet('db/pronosLocked', DB.pronosLocked);
+  } catch(e){ console.warn('Firebase saveLock failed', e); await saveDB(); }
 }
 
 async function loadDB(){
   let raw = null;
   try {
-    const r = await Promise.race([
-      fetch(FIREBASE_URL),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),5000))
-    ]);
-    if(r.ok){ const json=await r.json(); if(json&&typeof json==='object') raw=json; }
+    raw = await fbGet('db');
   } catch(e){
     console.warn('Firebase load failed, fallback localStorage', e);
     try { const ls=localStorage.getItem(STORAGE_KEY); if(ls) raw=JSON.parse(ls); } catch(e2){}
@@ -966,14 +1052,45 @@ function calcGroupPoints(ps1, ps2, rs1, rs2){
   return ps1===rs1&&ps2===rs2 ? 8 : 5; // 5 + 3 bonus
 }
 
+// Helper: get the real winner of a KO match (based on real admin scores)
+function getRealKOWinner(matchId){
+  const dbm = DB.matches[matchId];
+  if(!dbm || dbm.score1===null || dbm.score2===null) return null;
+  if(dbm.score1 > dbm.score2) return dbm.eq1;
+  if(dbm.score2 > dbm.score1) return dbm.eq2;
+  // Draw — use penaltyWinner if set
+  if(dbm.penaltyWinner) return dbm.penaltyWinner;
+  return null; // result not determined yet
+}
+
+// Helper: get user's predicted winner of a KO match
+function getUserKOWinner(userId, matchId, koTeams){
+  const prono = DB.pronos[`${userId}_${matchId}`];
+  if(!prono) return null;
+  const teams = koTeams[matchId] || {eq1: prono.eq1||'?', eq2: prono.eq2||'?'};
+  const eq1 = prono.eq1 || teams.eq1;
+  const eq2 = prono.eq2 || teams.eq2;
+  const s1 = parseInt(prono.score1), s2 = parseInt(prono.score2);
+  if(s1 > s2) return eq1;
+  if(s2 > s1) return eq2;
+  if(prono.penaltyWinner) return prono.penaltyWinner;
+  return eq1;
+}
+
+// Helper: check if user predicted the right score for a KO match
+function isKOScoreCorrect(userId, matchId){
+  const prono = DB.pronos[`${userId}_${matchId}`];
+  const dbm = DB.matches[matchId];
+  if(!prono || !dbm || dbm.score1===null) return false;
+  return parseInt(prono.score1)===parseInt(dbm.score1) && parseInt(prono.score2)===parseInt(dbm.score2);
+}
+
 function getUserTotalPoints(userId){
-  // Complex scoring system — needs KO context
   let pts = 0;
   const koTeams = getKOTeamsForUser(userId);
-  const userValidated = DB.pronoPhaseValidated[userId] || {};
-  const realStandings = getRealStandings();
 
-  // Group stage
+  // ---- Phase de groupes ----
+  // 5 pts bon résultat + 3 pts bonus si bon score exact
   MATCHES_DATA.forEach(m=>{
     const pronoKey = `${userId}_${m.id}`;
     const prono = DB.pronos[pronoKey];
@@ -982,17 +1099,132 @@ function getUserTotalPoints(userId){
     pts += calcGroupPoints(prono.score1, prono.score2, dbm.score1, dbm.score2)||0;
   });
 
-  // KO phases — points for correct qualifier + bonus for correct score
-  const koPhaseDef = [
-    { ids: Object.keys(SEIZIEME_FORMULAS), pts_qual:10, pts_pos:5, pts_score:0, prevPhase:null },
-    { ids: Object.keys(HUITIEME_FORMULAS), pts_qual:15, pts_pos:0, pts_score:8, prevIds: Object.keys(SEIZIEME_FORMULAS) },
-    { ids: Object.keys(QUART_FORMULAS),    pts_qual:20, pts_pos:0, pts_score:8, prevIds: Object.keys(HUITIEME_FORMULAS) },
-    { ids: Object.keys(DEMI_FORMULAS),     pts_qual:25, pts_pos:0, pts_score:8, prevIds: Object.keys(QUART_FORMULAS) },
-    { ids: ["M104"],                        pts_final:true, prevIds: Object.keys(DEMI_FORMULAS) },
-  ];
+  // ---- Classement de poule (après poules) ----
+  // 10 pts bon qualifié + 5 pts si bonne place dans son groupe
+  // UNIQUEMENT si TOUS les matchs du groupe ont un score réel saisi par l'admin
+  const realStandings = getRealStandings();
+  const userStandings = getGroupStandingsForUser(userId);
+  "ABCDEFGHIJKL".split('').forEach(g=>{
+    // Vérifier que tous les matchs du groupe ont un score réel
+    const groupMatches = MATCHES_DATA.filter(m=>m.groupe===g);
+    const allPlayed = groupMatches.every(m=>{
+      const dbm = DB.matches[m.id];
+      return dbm && dbm.score1 !== null && dbm.score2 !== null;
+    });
+    if(!allPlayed) return; // Pas encore tous joués → 0 pts classement pour ce groupe
+    const realOrder = realStandings[g];
+    const userOrder = userStandings[g];
+    if(!realOrder || !userOrder) return;
+    const realTop2 = [realOrder[0], realOrder[1]].filter(Boolean);
+    const userTop2 = [userOrder[0], userOrder[1]].filter(Boolean);
+    realTop2.forEach((team, realPos)=>{
+      if(userTop2.includes(team)){
+        pts += 10; // bon qualifié
+        if(userTop2[realPos] === team) pts += 5; // bonne place exacte
+      }
+    });
+  });
 
-  // For now, simplified: just return group stage points
-  // Full KO point calc requires real results which aren't ready
+  // ---- Seizièmes de finale (1/16) ----
+  // 15 pts si bon gagnant (qualifié pour les 1/8) + 8 pts bonus si bon score
+  Object.keys(SEIZIEME_FORMULAS).forEach(matchId=>{
+    const realWinner = getRealKOWinner(matchId);
+    if(!realWinner) return;
+    const userWinner = getUserKOWinner(userId, matchId, koTeams);
+    if(userWinner && userWinner === realWinner){
+      pts += 15;
+      if(isKOScoreCorrect(userId, matchId)) pts += 8;
+    }
+  });
+
+  // ---- Huitièmes de finale (1/8) ----
+  // 20 pts si bon qualifié aux 1/4 + 8 pts bonus si bon score
+  Object.keys(HUITIEME_FORMULAS).forEach(matchId=>{
+    const realWinner = getRealKOWinner(matchId);
+    if(!realWinner) return;
+    const userWinner = getUserKOWinner(userId, matchId, koTeams);
+    if(userWinner && userWinner === realWinner){
+      pts += 20;
+      if(isKOScoreCorrect(userId, matchId)) pts += 8;
+    }
+  });
+
+  // ---- Quarts de finale (1/4) ----
+  // 25 pts si bon qualifié en demi + 8 pts bonus si bon score
+  Object.keys(QUART_FORMULAS).forEach(matchId=>{
+    const realWinner = getRealKOWinner(matchId);
+    if(!realWinner) return;
+    const userWinner = getUserKOWinner(userId, matchId, koTeams);
+    if(userWinner && userWinner === realWinner){
+      pts += 25;
+      if(isKOScoreCorrect(userId, matchId)) pts += 8;
+    }
+  });
+
+  // ---- Demi-finales (1/2) ----
+  // 30 pts si bon finaliste + 8 pts bonus si bon score
+  Object.keys(DEMI_FORMULAS).forEach(matchId=>{
+    const realWinner = getRealKOWinner(matchId);
+    if(!realWinner) return;
+    const userWinner = getUserKOWinner(userId, matchId, koTeams);
+    if(userWinner && userWinner === realWinner){
+      pts += 30;
+      if(isKOScoreCorrect(userId, matchId)) pts += 8;
+    }
+  });
+
+  // ---- Match pour la 3e place (M103) ----
+  // 20 pts si bon 4e (perdant), 25 pts si bon 3e (gagnant) + 10 pts bonus si bon score
+  const dbM103 = DB.matches['M103'];
+  if(dbM103 && dbM103.score1!==null){
+    const pronoM103 = DB.pronos[`${userId}_M103`];
+    if(pronoM103){
+      const realEq1 = dbM103.eq1, realEq2 = dbM103.eq2;
+      const userEq1 = pronoM103.eq1 || koTeams['M103']?.eq1;
+      const userEq2 = pronoM103.eq2 || koTeams['M103']?.eq2;
+      // Déterminer 3e et 4e réels
+      let real3rd=null, real4th=null;
+      if(dbM103.score1>dbM103.score2){ real3rd=realEq1; real4th=realEq2; }
+      else if(dbM103.score2>dbM103.score1){ real3rd=realEq2; real4th=realEq1; }
+      else if(dbM103.penaltyWinner){ real3rd=dbM103.penaltyWinner; real4th=(dbM103.penaltyWinner===realEq1?realEq2:realEq1); }
+      // Déterminer 3e et 4e prédits
+      let user3rd=null, user4th=null;
+      const ps1=parseInt(pronoM103.score1), ps2=parseInt(pronoM103.score2);
+      if(ps1>ps2){ user3rd=userEq1; user4th=userEq2; }
+      else if(ps2>ps1){ user3rd=userEq2; user4th=userEq1; }
+      else if(pronoM103.penaltyWinner){ user3rd=pronoM103.penaltyWinner; user4th=(pronoM103.penaltyWinner===userEq1?userEq2:userEq1); }
+      else { user3rd=userEq1; user4th=userEq2; }
+      if(real3rd && user3rd===real3rd) pts += 25;
+      if(real4th && user4th===real4th) pts += 20;
+      if(real3rd && isKOScoreCorrect(userId, 'M103')) pts += 10;
+    }
+  }
+
+  // ---- Finale (M104) ----
+  // 30 pts si bon 2e (finaliste perdant), 40 pts si bon champion + 10 pts bonus si bon score
+  const dbM104 = DB.matches['M104'];
+  if(dbM104 && dbM104.score1!==null){
+    const pronoM104 = DB.pronos[`${userId}_M104`];
+    if(pronoM104){
+      const realEq1 = dbM104.eq1, realEq2 = dbM104.eq2;
+      const userEq1 = pronoM104.eq1 || koTeams['M104']?.eq1;
+      const userEq2 = pronoM104.eq2 || koTeams['M104']?.eq2;
+      let realChamp=null, realFinalist=null;
+      if(dbM104.score1>dbM104.score2){ realChamp=realEq1; realFinalist=realEq2; }
+      else if(dbM104.score2>dbM104.score1){ realChamp=realEq2; realFinalist=realEq1; }
+      else if(dbM104.penaltyWinner){ realChamp=dbM104.penaltyWinner; realFinalist=(dbM104.penaltyWinner===realEq1?realEq2:realEq1); }
+      let userChamp=null, userFinalist=null;
+      const ps1=parseInt(pronoM104.score1), ps2=parseInt(pronoM104.score2);
+      if(ps1>ps2){ userChamp=userEq1; userFinalist=userEq2; }
+      else if(ps2>ps1){ userChamp=userEq2; userFinalist=userEq1; }
+      else if(pronoM104.penaltyWinner){ userChamp=pronoM104.penaltyWinner; userFinalist=(pronoM104.penaltyWinner===userEq1?userEq2:userEq1); }
+      else { userChamp=userEq1; userFinalist=userEq2; }
+      if(realChamp && userChamp===realChamp) pts += 40;
+      if(realFinalist && userFinalist===realFinalist) pts += 30;
+      if(realChamp && isKOScoreCorrect(userId, 'M104')) pts += 10;
+    }
+  }
+
   return {pts, exact: 0};
 }
 
@@ -1061,7 +1293,7 @@ function canAccessPhase(username, phaseKey){
 async function validatePhase(username, phaseKey){
   if(!DB.pronoPhaseValidated[username]) DB.pronoPhaseValidated[username] = {};
   DB.pronoPhaseValidated[username][phaseKey] = true;
-  await saveDB();
+  await savePhaseValidated(username);
 }
 
 // ============================================================
@@ -1128,7 +1360,7 @@ async function doRegister(){
   if(u.length<3){ toast('Identifiant trop court (3 car. min)','error'); return; }
   if(DB.users[u]){ toast('Cet identifiant est déjà pris','error'); return; }
   DB.users[u]={username:u,password:p};
-  await saveDB();
+  await saveUser(u);
   currentUser={username:u,isAdmin:false};
   closeModal('registerModal'); showUserView();
   toast(`Compte créé ! Bienvenue ${u} ⚽`,'success');
@@ -1258,7 +1490,7 @@ async function goBackToPhase(phaseKey){
   const idx = PHASES.findIndex(p=>p.key===phaseKey);
   if(!DB.pronoPhaseValidated[username]) DB.pronoPhaseValidated[username]={};
   PHASES.slice(idx).forEach(p=>{ delete DB.pronoPhaseValidated[username][p.key]; });
-  await saveDB();
+  await savePhaseValidated(username);
   toast(`Tu peux modifier tes pronostics pour "${PHASES[idx].label}".`,'info');
   currentUserPhase = phaseKey;
   renderUserPhase();
@@ -1546,14 +1778,14 @@ async function validateGroupsPhase(){
     return;
   }
 
-  // Save all pronos
-  Object.entries(toSave).forEach(([matchId,scores])=>{
+  // Save all pronos individually (écritures ciblées, pas de PUT global)
+  await Promise.all(Object.entries(toSave).map(async ([matchId,scores])=>{
     const k=`${username}_${matchId}`;
     DB.pronos[k]={userId:username, matchId, score1:scores.score1, score2:scores.score2};
-  });
+    await saveProno(k);
+  }));
 
   await validatePhase(username, 'groupes');
-  await saveDB();
   toast('Toutes les poules validées ! 🎉 Les 1/16 sont maintenant disponibles.','success');
   showPhaseSummary('groupes', username, 'renderUserPhase()');
 }
@@ -1726,8 +1958,11 @@ async function validateKOPhase(phaseKey){
     DB.pronos[k]=pronoObj;
   });
 
+  await Promise.all(Object.keys(toSave).map(matchId=>{
+    const k=`${username}_${matchId}`;
+    return saveProno(k);
+  }));
   await validatePhase(username, phaseKey);
-  await saveDB();
 
   const nextPhase = PHASES[PHASES.findIndex(p=>p.key===phaseKey)+1];
   const msg = nextPhase ? `Phase validée ! Passe maintenant aux ${nextPhase.label}.` : 'Tous tes pronostics sont soumis ! 🏆';
@@ -1781,6 +2016,7 @@ function renderMyPronos(){
   koPhaseDef.forEach(ph=>{
     const hasPronos = ph.ids.some(id=>DB.pronos[`${username}_${id}`]);
     if(!hasPronos) return;
+    let phPts=0;
     html+=`<div class="phase-sep">${ph.label}</div>`;
     ph.ids.forEach(matchId=>{
       const k=`${username}_${matchId}`;
@@ -1788,15 +2024,67 @@ function renderMyPronos(){
       if(!prono) return;
       const teams = koTeams[matchId]||{eq1:prono.eq1||'?',eq2:prono.eq2||'?'};
       const eq1=prono.eq1||teams.eq1, eq2=prono.eq2||teams.eq2;
+      const dbm=DB.matches[matchId];
+      const hasReal = dbm && dbm.score1!==null;
+      // Calcul points pour ce match KO
+      let matchPts = null;
+      if(hasReal){
+        matchPts = 0;
+        if(matchId==='M103'){
+          // 3e place
+          let real3rd=null,real4th=null;
+          if(dbm.score1>dbm.score2){real3rd=dbm.eq1;real4th=dbm.eq2;}
+          else if(dbm.score2>dbm.score1){real3rd=dbm.eq2;real4th=dbm.eq1;}
+          else if(dbm.penaltyWinner){real3rd=dbm.penaltyWinner;real4th=(dbm.penaltyWinner===dbm.eq1?dbm.eq2:dbm.eq1);}
+          const ps1=parseInt(prono.score1),ps2=parseInt(prono.score2);
+          let user3rd=null,user4th=null;
+          if(ps1>ps2){user3rd=eq1;user4th=eq2;}else if(ps2>ps1){user3rd=eq2;user4th=eq1;}
+          else if(prono.penaltyWinner){user3rd=prono.penaltyWinner;user4th=(prono.penaltyWinner===eq1?eq2:eq1);}
+          else{user3rd=eq1;user4th=eq2;}
+          if(real3rd&&user3rd===real3rd) matchPts+=25;
+          if(real4th&&user4th===real4th) matchPts+=20;
+          if(real3rd&&parseInt(prono.score1)===dbm.score1&&parseInt(prono.score2)===dbm.score2) matchPts+=10;
+        } else if(matchId==='M104'){
+          // Finale
+          let realChamp=null,realFin=null;
+          if(dbm.score1>dbm.score2){realChamp=dbm.eq1;realFin=dbm.eq2;}
+          else if(dbm.score2>dbm.score1){realChamp=dbm.eq2;realFin=dbm.eq1;}
+          else if(dbm.penaltyWinner){realChamp=dbm.penaltyWinner;realFin=(dbm.penaltyWinner===dbm.eq1?dbm.eq2:dbm.eq1);}
+          const ps1=parseInt(prono.score1),ps2=parseInt(prono.score2);
+          let userChamp=null,userFin=null;
+          if(ps1>ps2){userChamp=eq1;userFin=eq2;}else if(ps2>ps1){userChamp=eq2;userFin=eq1;}
+          else if(prono.penaltyWinner){userChamp=prono.penaltyWinner;userFin=(prono.penaltyWinner===eq1?eq2:eq1);}
+          else{userChamp=eq1;userFin=eq2;}
+          if(realChamp&&userChamp===realChamp) matchPts+=40;
+          if(realFin&&userFin===realFin) matchPts+=30;
+          if(realChamp&&parseInt(prono.score1)===dbm.score1&&parseInt(prono.score2)===dbm.score2) matchPts+=10;
+        } else {
+          // Matchs KO normaux
+          const ptsQual = Object.keys(SEIZIEME_FORMULAS).includes(matchId)?15:
+                          Object.keys(HUITIEME_FORMULAS).includes(matchId)?20:
+                          Object.keys(QUART_FORMULAS).includes(matchId)?25:
+                          Object.keys(DEMI_FORMULAS).includes(matchId)?30:0;
+          const realWinner=getRealKOWinner(matchId);
+          const userWinner=getUserKOWinner(username,matchId,koTeams);
+          if(realWinner&&userWinner&&userWinner===realWinner){
+            matchPts+=ptsQual;
+            if(parseInt(prono.score1)===dbm.score1&&parseInt(prono.score2)===dbm.score2) matchPts+=8;
+          }
+        }
+        phPts+=matchPts;
+      }
       html+=`<div class="match-card" style="padding:10px 14px;margin-bottom:6px">
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
           <span style="color:var(--text2);font-size:.75rem">${matchId}</span>
           <span>${flag(eq1)} <strong>${eq1}</strong></span>
           <span style="color:var(--gold);font-family:'Bebas Neue',sans-serif">${prono.score1} – ${prono.score2}</span>
           <span><strong>${eq2}</strong> ${flag(eq2)}</span>
+          ${hasReal?`<span style="color:var(--text2);font-size:.8rem">Réel: ${dbm.score1}-${dbm.score2}</span>`:''}
+          ${matchPts!==null?`<span class="badge ${matchPts>0?'badge-green':'badge-red'}">${matchPts} pts</span>`:''}
         </div>
       </div>`;
     });
+    totalPts+=phPts;
   });
 
   if(!html.includes('match-card')){
@@ -1872,13 +2160,16 @@ async function saveAdminScore(matchId){
   DB.matches[matchId].score1=parseInt(s1);
   DB.matches[matchId].score2=parseInt(s2);
   DB.matches[matchId].statut='Terminé';
-  await saveDB();
+  try { await fbSet(`db/matches/${matchId}`, DB.matches[matchId]); }
+  catch(e){ await saveDB(); }
   toast('Score enregistré ✓','success');
   renderAdminMatches();
 }
 async function resetScore(matchId){
   DB.matches[matchId].score1=null; DB.matches[matchId].score2=null; DB.matches[matchId].statut='A venir';
-  await saveDB(); toast('Score réinitialisé','info'); renderAdminMatches();
+  try { await fbSet(`db/matches/${matchId}`, DB.matches[matchId]); }
+  catch(e){ await saveDB(); }
+  toast('Score réinitialisé','info'); renderAdminMatches();
 }
 function openEditMatch(matchId){
   const m=DB.matches[matchId];
@@ -1893,7 +2184,9 @@ async function doEditMatch(){
   const eq2=document.getElementById('editMatchTeam2').value.trim();
   if(!eq1||!eq2){ toast('Remplis les deux noms','error'); return; }
   DB.matches[id].eq1=eq1; DB.matches[id].eq2=eq2;
-  await saveDB(); closeModal('editMatchModal'); toast('Match modifié ✓','success'); renderAdminMatches();
+  try { await fbSet(`db/matches/${id}`, DB.matches[id]); }
+  catch(e){ await saveDB(); }
+  closeModal('editMatchModal'); toast('Match modifié ✓','success'); renderAdminMatches();
 }
 
 // ============================================================
@@ -1923,7 +2216,7 @@ async function toggleLockPronos(){
   const action = DB.pronosLocked ? 'déverrouiller' : 'figer définitivement';
   if(!confirm(`Confirmes-tu l'action : ${action} tous les pronostics ?`)) return;
   DB.pronosLocked = !DB.pronosLocked;
-  await saveDB();
+  await saveLock();
   updateLockBtn();
   const msg = DB.pronosLocked ? '🔒 Pronostics figés ! Plus aucune modification possible.' : '🔓 Pronostics déverrouillés.';
   toast(msg, DB.pronosLocked ? 'error' : 'success');
@@ -1956,9 +2249,14 @@ function renderAdminUsers(){
 
 async function resetUserPhase(username){
   if(!confirm(`Réinitialiser la progression de ${username} ? Ses pronos seront effacés.`)) return;
-  Object.keys(DB.pronos).forEach(k=>{ if(DB.pronos[k].userId===username) delete DB.pronos[k]; });
+  const pronoKeys = Object.keys(DB.pronos).filter(k=>DB.pronos[k].userId===username);
+  pronoKeys.forEach(k=>delete DB.pronos[k]);
   if(DB.pronoPhaseValidated[username]) delete DB.pronoPhaseValidated[username];
-  await saveDB(); toast(`Phase de ${username} réinitialisée`,'info'); renderAdminUsers();
+  try {
+    await Promise.all(pronoKeys.map(k=>deletePronoRemote(k)));
+    await fetch(`${FIREBASE_BASE}/db/pronoPhaseValidated/${username}.json`,{method:'DELETE'});
+  } catch(e){ console.warn('resetUserPhase remote failed, fallback saveDB', e); await saveDB(); }
+  toast(`Phase de ${username} réinitialisée`,'info'); renderAdminUsers();
 }
 
 function openEditUser(username){
@@ -1985,15 +2283,28 @@ async function doEditUser(){
     if(DB.pronoPhaseValidated[oldName]){ DB.pronoPhaseValidated[newName]=DB.pronoPhaseValidated[oldName]; delete DB.pronoPhaseValidated[oldName]; }
     delete DB.users[oldName];
     DB.users[newName]={username:newName,password:newPass||user.password};
-  } else { if(newPass) DB.users[oldName].password=newPass; }
-  await saveDB(); closeModal('editUserModal'); toast('Utilisateur modifié ✓','success'); renderAdminUsers();
+    // Rename requires a full save (complex key migration)
+    await saveDB();
+  } else {
+    if(newPass) DB.users[oldName].password=newPass;
+    await saveUser(oldName);
+  }
+  closeModal('editUserModal'); toast('Utilisateur modifié ✓','success'); renderAdminUsers();
 }
 async function deleteUser(username){
   if(!confirm(`Supprimer ${username} et tous ses pronostics ?`)) return;
+  // Supprimer localement
   delete DB.users[username];
-  Object.keys(DB.pronos).forEach(k=>{ if(DB.pronos[k].userId===username) delete DB.pronos[k]; });
-  if(DB.pronoPhaseValidated[username]) delete DB.pronoPhaseValidated[username];
-  await saveDB(); toast('Utilisateur supprimé','info'); renderAdminUsers();
+  const pronoKeys = Object.keys(DB.pronos).filter(k=>DB.pronos[k].userId===username);
+  pronoKeys.forEach(k=>delete DB.pronos[k]);
+  delete DB.pronoPhaseValidated[username];
+  // Supprimer sur Firebase avec des DELETE ciblés uniquement.
+  // On n'utilise JAMAIS saveDB() en fallback ici : saveDB rechargerait d'abord Firebase
+  // et pourrait réintroduire le compte qu'on vient de supprimer.
+  try { await fetch(`${FIREBASE_BASE}/db/users/${username}.json`,{method:'DELETE'}); } catch(e){ console.warn('delete user remote failed',e); }
+  try { await Promise.all(pronoKeys.map(k=>fetch(`${FIREBASE_BASE}/db/pronos/${k}.json`,{method:'DELETE'}))); } catch(e){ console.warn('delete pronos remote failed',e); }
+  try { await fetch(`${FIREBASE_BASE}/db/pronoPhaseValidated/${username}.json`,{method:'DELETE'}); } catch(e){ console.warn('delete phaseValidated remote failed',e); }
+  toast('Utilisateur supprimé','info'); renderAdminUsers();
 }
 async function doAddUser(){
   const u=document.getElementById('addUserName').value.trim();
@@ -2001,7 +2312,7 @@ async function doAddUser(){
   if(!u||!p){ toast('Remplis tous les champs','error'); return; }
   if(DB.users[u]){ toast('Cet identifiant est déjà pris','error'); return; }
   DB.users[u]={username:u,password:p};
-  await saveDB(); closeModal('addUserModal'); toast('Utilisateur ajouté ✓','success'); renderAdminUsers();
+  await saveUser(u); closeModal('addUserModal'); toast('Utilisateur ajouté ✓','success'); renderAdminUsers();
 }
 
 // ============================================================
@@ -2060,7 +2371,11 @@ async function deleteProno(key){
   if(phaseIdx>=0 && DB.pronoPhaseValidated[userId]){
     PHASES.slice(phaseIdx).forEach(p=>{ delete DB.pronoPhaseValidated[userId][p.key]; });
   }
-  await saveDB(); toast('Pronostic supprimé ✓','info'); renderAdminPronos();
+  try {
+    await deletePronoRemote(key);
+    if(phaseIdx>=0) await savePhaseValidated(userId);
+  } catch(e){ await saveDB(); }
+  toast('Pronostic supprimé ✓','info'); renderAdminPronos();
 }
 
 // ============================================================
